@@ -313,7 +313,7 @@ static void __device_link_free_srcu(struct rcu_head *rhead)
 
 static void __device_link_del(struct device_link *link)
 {
-	dev_info(link->consumer, "Dropping the link to %s\n",
+	dev_dbg(link->consumer, "Dropping the link to %s\n",
 		 dev_name(link->supplier));
 
 	if (link->flags & DL_FLAG_PM_RUNTIME)
@@ -326,7 +326,7 @@ static void __device_link_del(struct device_link *link)
 #else /* !CONFIG_SRCU */
 static void __device_link_del(struct device_link *link)
 {
-	dev_info(link->consumer, "Dropping the link to %s\n",
+	dev_dbg(link->consumer, "Dropping the link to %s\n",
 		 dev_name(link->supplier));
 
 	if (link->flags & DL_FLAG_PM_RUNTIME)
