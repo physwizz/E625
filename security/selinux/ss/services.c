@@ -82,9 +82,7 @@ const char *selinux_policycap_names[__POLICYDB_CAPABILITY_MAX] = {
 
 static struct selinux_ss selinux_ss;
 
-// [ SEC_SELINUX_PORTING_COMMON
 int ss_initialized;
-// [ SEC_SELINUX_PORTING_COMMON
 
 void selinux_ss_init(struct selinux_ss **ss)
 {
@@ -754,14 +752,8 @@ out:
 	kfree(n);
 	kfree(t);
 
-// [ SEC_SELINUX_PORTING_COMMON
-#ifdef CONFIG_ALWAYS_ENFORCE
-    	selinux_enforcing = 1;
-#endif
-	
-	if (!selinux_enforcing) // SEC_SELINUX_PORTING_COMMON Change to use RKP 
+	if (!selinux_enforcing)
 		return 0;
-// ] SEC_SELINUX_PORTING_COMMON
 	return -EPERM;
 }
 
@@ -1654,13 +1646,9 @@ out:
 	kfree(s);
 	kfree(t);
 	kfree(n);
-// [ SEC_SELINUX_PORTING_COMMON
-#ifdef CONFIG_ALWAYS_ENFORCE
-	selinux_enforcing = 1;
-#endif
-	if (!selinux_enforcing) // SEC_SELINUX_PORTING_COMMON Change to use RKP 
-            return 0;
-// ] SEC_SELINUX_PORTING_COMMON
+
+	if (!selinux_enforcing)
+		return 0;
 	return -EACCES;
 }
 
@@ -1957,13 +1945,8 @@ static inline int convert_context_handle_invalid_context(
 	char *s;
 	u32 len;
 
-// [ SEC_SELINUX_PORTING_COMMON 
-	#ifdef CONFIG_ALWAYS_ENFORCE
-	    selinux_enforcing = 1;
-	#endif
-	if (!selinux_enforcing) // SEC_SELINUX_PORTING_COMMON Change to use RKP
+	if (selinux_enforcing)
 		return -EINVAL;
-// ] SEC_SELINUX_PORTING_COMMON
 
 	if (!context_struct_to_string(policydb, context, &s, &len)) {
 		pr_warn("SELinux:  Context %s would be invalid if enforcing\n",
