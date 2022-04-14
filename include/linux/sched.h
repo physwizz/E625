@@ -27,6 +27,7 @@
 #include <linux/signal_types.h>
 #include <linux/mm_types_task.h>
 #include <linux/task_io_accounting.h>
+#include <linux/sec_debug_types.h>
 
 /* task_struct member predeclarations (sorted alphabetically): */
 struct audit_context;
@@ -206,6 +207,15 @@ struct task_group;
 /* Task command name length: */
 #define TASK_COMM_LEN			16
 
+enum task_event {
+	PUT_PREV_TASK   = 0,
+	PICK_NEXT_TASK  = 1,
+	TASK_WAKE       = 2,
+	TASK_MIGRATE    = 3,
+	TASK_UPDATE     = 4,
+	IRQ_UPDATE	= 5,
+};
+
 extern cpumask_var_t			cpu_isolated_map;
 
 extern void scheduler_tick(void);
@@ -317,6 +327,78 @@ struct load_weight {
 	u32				inv_weight;
 };
 
+/**
+ * struct util_est - Estimation utilization of FAIR tasks
+ * @enqueued: instantaneous estimated utilization of a task/cpu
+ * @ewma:     the Exponential Weighted Moving Average (EWMA)
+ *            utilization of a task
+ *
+ * Support data structure to track an Exponential Weighted Moving Average
+ * (EWMA) of a FAIR task's utilization. New samples are added to the moving
+ * average each time a task completes an activation. Sample's weight is chosen
+ * so that the EWMA will be relatively insensitive to transient changes to the
+ * task's workload.
+ *
+ * The enqueued attribute has a slightly different meaning for tasks and cpus:
+ * - task:   the task's util_avg at last task dequeue time
+ * - cfs_rq: the sum of util_est.enqueued for each RUNNABLE task on that CPU
+ * Thus, the util_est.enqueued of a task represents the contribution on the
+ * estimated utilization of the CPU where that task is currently enqueued.
+ *
+ * Only for tasks we track a moving average of the past instantaneous
+ * estimated utilization. This allows to absorb sporadic drops in utilization
+ * of an otherwise almost periodic task.
+ */
+struct util_est {
+	unsigned int			enqueued;
+	unsigned int			ewma;
+#define UTIL_EST_WEIGHT_SHIFT		2
+};
+
+struct multi_load {
+	u32				period_contrib;
+	u64				runnable_sum;
+	unsigned long			runnable_avg;
+	u32				util_sum;
+	unsigned long			util_avg;
+	u32				util_sum_s;
+	unsigned long			util_avg_s;
+
+	/* for util_est */
+	struct util_est			util_est;
+	struct util_est			util_est_s;
+};
+
+struct multi_load_cfs_rq {
+	atomic_long_t			removed_util_avg, removed_util_avg_s;
+};
+
+#define EMS_PART_ENQUEUE	0x1
+#define EMS_PART_DEQUEUE	0x2
+#define EMS_PART_UPDATE		0x4
+#define EMS_PART_WAKEUP_NEW	0x8
+
+struct part {
+	bool	running;
+
+	u64	period_start;
+	u64	last_updated;
+	u64	active_sum;
+
+#define PART_HIST_SIZE_MAX	20
+	int	hist_idx;
+	int	hist[PART_HIST_SIZE_MAX];
+	int	active_ratio_recent;
+	int	active_ratio_avg;
+	int	active_ratio_max;
+	int	active_ratio_est;
+	int	active_ratio_stdev;
+	int	active_ratio_limit;
+
+	u64	last_boost_time;
+	int	active_ratio_boost;
+};
+
 /*
  * The load_avg/util_avg accumulates an infinite geometric series
  * (see __update_load_avg() in kernel/sched/fair.c).
@@ -376,6 +458,14 @@ struct sched_avg {
 	u32				period_contrib;
 	unsigned long			load_avg;
 	unsigned long			util_avg;
+	struct util_est			util_est;
+
+	struct multi_load		ml;
+};
+
+struct ontime_entity {
+	int migrating;
+	int cpu;
 };
 
 struct sched_statistics {
@@ -448,7 +538,43 @@ struct sched_entity {
 	 */
 	struct sched_avg		avg ____cacheline_aligned_in_smp;
 #endif
+	struct ontime_entity		ontime;
 };
+
+#ifdef CONFIG_SCHED_WALT
+#define RAVG_HIST_SIZE_MAX  5
+
+/* ravg represents frequency scaled cpu-demand of tasks */
+struct ravg {
+	/*
+	 * 'mark_start' marks the beginning of an event (task waking up, task
+	 * starting to execute, task being preempted) within a window
+	 *
+	 * 'sum' represents how runnable a task has been within current
+	 * window. It incorporates both running time and wait time and is
+	 * frequency scaled.
+	 *
+	 * 'sum_history' keeps track of history of 'sum' seen over previous
+	 * RAVG_HIST_SIZE windows. Windows where task was entirely sleeping are
+	 * ignored.
+	 *
+	 * 'demand' represents maximum sum seen over previous
+	 * sysctl_sched_ravg_hist_size windows. 'demand' could drive frequency
+	 * demand for tasks.
+	 *
+	 * 'curr_window' represents task's contribution to cpu busy time
+	 * statistics (rq->curr_runnable_sum) in current window
+	 *
+	 * 'prev_window' represents task's contribution to cpu busy time
+	 * statistics (rq->prev_runnable_sum) in previous window
+	 */
+	u64 mark_start;
+	u32 sum, demand;
+	u32 sum_history[RAVG_HIST_SIZE_MAX];
+	u32 curr_window, prev_window;
+	u16 active_windows;
+};
+#endif
 
 struct sched_rt_entity {
 	struct list_head		run_list;
@@ -465,6 +591,19 @@ struct sched_rt_entity {
 	struct rt_rq			*rt_rq;
 	/* rq "owned" by this entity/group: */
 	struct rt_rq			*my_q;
+#endif
+
+#ifdef CONFIG_SMP
+#ifdef CONFIG_SCHED_USE_FLUID_RT
+	int sync_flag;
+#endif
+	/*
+	 * Per entity load average tracking.
+	 *
+	 * Put into separate cache line so it does not
+	 * collide with read-mostly values above.
+	 */
+	struct sched_avg		avg;// ____cacheline_aligned_in_smp;
 #endif
 } __randomize_layout;
 
@@ -545,6 +684,10 @@ union rcu_special {
 	u32 s; /* Set of bits. */
 };
 
+#ifdef CONFIG_FIVE
+struct task_integrity;
+#endif
+
 enum perf_event_task_context {
 	perf_invalid_context = -1,
 	perf_hw_context = 0,
@@ -602,6 +745,24 @@ struct task_struct {
 	const struct sched_class	*sched_class;
 	struct sched_entity		se;
 	struct sched_rt_entity		rt;
+#ifdef CONFIG_SCHED_WALT
+	struct ravg ravg;
+	/*
+	 * 'init_load_pct' represents the initial task load assigned to children
+	 * of this task
+	 */
+	u32 init_load_pct;
+	u64 last_sleep_ts;
+#endif
+#ifdef CONFIG_SCHED_USE_FLUID_RT
+	int victim_flag;
+#endif
+
+#ifdef CONFIG_SCHED_EMS
+	struct task_band *band;
+	struct list_head band_members;
+#endif
+
 #ifdef CONFIG_CGROUP_SCHED
 	struct task_group		*sched_task_group;
 #endif
@@ -643,6 +804,8 @@ struct task_struct {
 	struct rb_node			pushable_dl_tasks;
 #endif
 
+	unsigned int			sse;
+
 	struct mm_struct		*mm;
 	struct mm_struct		*active_mm;
 
@@ -668,6 +831,10 @@ struct task_struct {
 	unsigned			sched_contributes_to_load:1;
 	unsigned			sched_migrated:1;
 	unsigned			sched_remote_wakeup:1;
+#ifdef CONFIG_PSI
+	unsigned			sched_psi_wake_requeue:1;
+#endif
+
 	/* Force alignment to the next boundary: */
 	unsigned			:0;
 
@@ -752,6 +919,10 @@ struct task_struct {
 	u64				stimescaled;
 #endif
 	u64				gtime;
+#ifdef CONFIG_CPU_FREQ_TIMES
+	u64				*time_in_state;
+	unsigned int			max_state;
+#endif
 	struct prev_cputime		prev_cputime;
 #ifdef CONFIG_VIRT_CPU_ACCOUNTING_GEN
 	struct vtime			vtime;
@@ -926,6 +1097,10 @@ struct task_struct {
 	siginfo_t			*last_siginfo;
 
 	struct task_io_accounting	ioac;
+#ifdef CONFIG_PSI
+	/* Pressure stall state */
+	unsigned int			psi_flags;
+#endif
 #ifdef CONFIG_TASK_XACCT
 	/* Accumulated RSS usage: */
 	u64				acct_rss_mem1;
@@ -1089,8 +1264,10 @@ struct task_struct {
 #endif /* CONFIG_TRACING */
 
 #ifdef CONFIG_KCOV
+	/* See kernel/kcov.c for more details. */
+
 	/* Coverage collection mode enabled for this task (0 if disabled): */
-	enum kcov_mode			kcov_mode;
+	unsigned int			kcov_mode;
 
 	/* Size of the kcov_area: */
 	unsigned int			kcov_size;
@@ -1100,6 +1277,12 @@ struct task_struct {
 
 	/* KCOV descriptor wired with this task or NULL: */
 	struct kcov			*kcov;
+
+	/* KCOV common handle for remote coverage collection: */
+	u64				kcov_handle;
+
+	/* KCOV sequence number: */
+	int				kcov_sequence;
 #endif
 
 #ifdef CONFIG_MEMCG
@@ -1121,6 +1304,9 @@ struct task_struct {
 #ifdef CONFIG_DEBUG_ATOMIC_SLEEP
 	unsigned long			task_state_change;
 #endif
+#ifdef CONFIG_FIVE
+	struct task_integrity		*integrity;
+#endif
 	int				pagefault_disabled;
 #ifdef CONFIG_MMU
 	struct task_struct		*oom_reaper_list;
@@ -1138,6 +1324,9 @@ struct task_struct {
 #ifdef CONFIG_SECURITY
 	/* Used by LSM modules for access restriction: */
 	void				*security;
+#endif
+#ifdef CONFIG_SEC_DEBUG_DTASK
+	struct sec_debug_wait		ssdbg_wait;
 #endif
 
 	/*
@@ -1356,6 +1545,7 @@ extern struct pid *cad_pid;
 #define PF_KTHREAD		0x00200000	/* I am a kernel thread */
 #define PF_RANDOMIZE		0x00400000	/* Randomize virtual address space */
 #define PF_SWAPWRITE		0x00800000	/* Allowed to write to swap */
+#define PF_MEMSTALL		0x01000000	/* Stalled due to lack of memory */
 #define PF_NO_SETAFFINITY	0x04000000	/* Userland is not allowed to meddle with cpus_allowed */
 #define PF_MCE_EARLY		0x08000000      /* Early kill for mce process policy */
 #define PF_MUTEX_TESTER		0x20000000	/* Thread belongs to the rt mutex tester */
@@ -1408,6 +1598,7 @@ static inline bool is_percpu_thread(void)
 #define PFA_SPEC_SSB_FORCE_DISABLE	4	/* Speculative Store Bypass force disabled*/
 #define PFA_SPEC_IB_DISABLE		5	/* Indirect branch speculation restricted */
 #define PFA_SPEC_IB_FORCE_DISABLE	6	/* Indirect branch speculation permanently restricted */
+#define PFA_LMK_WAITING			7	/* Lowmemorykiller is waiting */
 
 #define TASK_PFA_TEST(name, func)					\
 	static inline bool task_##func(struct task_struct *p)		\
@@ -1445,6 +1636,9 @@ TASK_PFA_CLEAR(SPEC_IB_DISABLE, spec_ib_disable)
 
 TASK_PFA_TEST(SPEC_IB_FORCE_DISABLE, spec_ib_force_disable)
 TASK_PFA_SET(SPEC_IB_FORCE_DISABLE, spec_ib_force_disable)
+
+TASK_PFA_TEST(LMK_WAITING, lmk_waiting)
+TASK_PFA_SET(LMK_WAITING, lmk_waiting)
 
 static inline void
 current_restore_flags(unsigned long orig_flags, unsigned long flags)
@@ -1589,6 +1783,12 @@ static inline void set_tsk_thread_flag(struct task_struct *tsk, int flag)
 static inline void clear_tsk_thread_flag(struct task_struct *tsk, int flag)
 {
 	clear_ti_thread_flag(task_thread_info(tsk), flag);
+}
+
+static inline void update_tsk_thread_flag(struct task_struct *tsk, int flag,
+					  bool value)
+{
+	update_ti_thread_flag(task_thread_info(tsk), flag, value);
 }
 
 static inline int test_and_set_tsk_thread_flag(struct task_struct *tsk, int flag)

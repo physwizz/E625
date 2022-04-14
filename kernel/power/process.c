@@ -85,26 +85,27 @@ static int try_to_freeze_tasks(bool user_only)
 	elapsed = ktime_sub(end, start);
 	elapsed_msecs = ktime_to_ms(elapsed);
 
-	if (todo) {
+	if (wakeup) {
 		pr_cont("\n");
-		pr_err("Freezing of tasks %s after %d.%03d seconds "
-		       "(%d tasks refusing to freeze, wq_busy=%d):\n",
-		       wakeup ? "aborted" : "failed",
+		pr_err("Freezing of tasks aborted after %d.%03d seconds",
+		       elapsed_msecs / 1000, elapsed_msecs % 1000);
+	} else if (todo) {
+		pr_cont("\n");
+		pr_err("Freezing of tasks failed after %d.%03d seconds"
+		       " (%d tasks refusing to freeze, wq_busy=%d):\n",
 		       elapsed_msecs / 1000, elapsed_msecs % 1000,
 		       todo - wq_busy, wq_busy);
 
 		if (wq_busy)
 			show_workqueue_state();
 
-		if (!wakeup) {
-			read_lock(&tasklist_lock);
-			for_each_process_thread(g, p) {
-				if (p != current && !freezer_should_skip(p)
-				    && freezing(p) && !frozen(p))
-					sched_show_task(p);
-			}
-			read_unlock(&tasklist_lock);
+		read_lock(&tasklist_lock);
+		for_each_process_thread(g, p) {
+			if (p != current && !freezer_should_skip(p)
+			    && freezing(p) && !frozen(p))
+				sched_show_task(p);
 		}
+		read_unlock(&tasklist_lock);
 	} else {
 		pr_cont("(elapsed %d.%03d seconds) ", elapsed_msecs / 1000,
 			elapsed_msecs % 1000);
@@ -192,6 +193,7 @@ void thaw_processes(void)
 	struct task_struct *curr = current;
 
 	trace_suspend_resume(TPS("thaw_processes"), 0, true);
+	dbg_snapshot_suspend("thaw_processes", thaw_processes, NULL, 0, DSS_FLAG_IN);
 	if (pm_freezing)
 		atomic_dec(&system_freezing_cnt);
 	pm_freezing = false;
@@ -204,7 +206,7 @@ void thaw_processes(void)
 	__usermodehelper_set_disable_depth(UMH_FREEZING);
 	thaw_workqueues();
 
-	cpuset_wait_for_hotplug();
+	cpuset_wait_for_hotplug_wo_completion();
 
 	read_lock(&tasklist_lock);
 	for_each_process_thread(g, p) {
@@ -221,6 +223,7 @@ void thaw_processes(void)
 
 	schedule();
 	pr_cont("done.\n");
+	dbg_snapshot_suspend("thaw_processes", thaw_processes, NULL, 0, DSS_FLAG_OUT);
 	trace_suspend_resume(TPS("thaw_processes"), 0, false);
 }
 

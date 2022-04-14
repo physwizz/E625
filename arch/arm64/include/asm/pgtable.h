@@ -23,6 +23,10 @@
 #include <asm/pgtable-hwdef.h>
 #include <asm/pgtable-prot.h>
 
+#ifdef CONFIG_RKP
+#include <linux/rkp.h>
+#endif
+
 /*
  * VMALLOC range.
  *
@@ -199,7 +203,23 @@ static inline pmd_t pmd_mkcont(pmd_t pmd)
 
 static inline void set_pte(pte_t *ptep, pte_t pte)
 {
+#ifdef CONFIG_RKP
+	/* bug on double mapping */
+	BUG_ON(pte_val(pte) && rkp_is_pg_dbl_mapped(pte_val(pte)));
+
+	if (rkp_is_pg_protected((u64)ptep)) {
+		uh_call(UH_APP_RKP, RKP_WRITE_PGT3, (u64)ptep, pte_val(pte), 0, 0);
+	} else {
+		asm volatile("mov x1, %0\n"
+				"mov x2, %1\n"
+				"str x2, [x1]\n"
+				:
+				: "r" (ptep), "r" (pte)
+				: "x1", "x2", "memory");
+	}
+#else
 	*ptep = pte;
+#endif
 
 	/*
 	 * Only if the new pte is valid and kernel, otherwise TLB maintenance
@@ -385,7 +405,20 @@ static inline bool pud_table(pud_t pud) { return true; }
 
 static inline void set_pmd(pmd_t *pmdp, pmd_t pmd)
 {
+#ifdef CONFIG_RKP
+	if (rkp_is_pg_protected((u64)pmdp)) {
+		uh_call(UH_APP_RKP, RKP_WRITE_PGT2, (u64)pmdp, pmd_val(pmd), 0, 0);
+	} else {
+		asm volatile("mov x1, %0\n"
+					"mov x2, %1\n"
+					"str x2, [x1]\n"
+		:
+		: "r" (pmdp), "r" (pmd)
+		: "x1", "x2", "memory");
+	}
+#else
 	*pmdp = pmd;
+#endif
 	dsb(ishst);
 	isb();
 }
@@ -437,7 +470,20 @@ static inline void pte_unmap(pte_t *pte) { }
 
 static inline void set_pud(pud_t *pudp, pud_t pud)
 {
+#ifdef CONFIG_RKP
+	if (rkp_is_pg_protected((u64)pudp)) {
+		uh_call(UH_APP_RKP, RKP_WRITE_PGT1, (u64)pudp, pud_val(pud), 0, 0);
+	} else {
+		asm volatile("mov x1, %0\n"
+				"mov x2, %1\n"
+				"str x2, [x1]\n"
+				:
+				: "r" (pudp), "r" (pud)
+				: "x1", "x2", "memory");
+	}
+#else
 	*pudp = pud;
+#endif
 	dsb(ishst);
 	isb();
 }
@@ -618,6 +664,14 @@ static inline int pmdp_test_and_clear_young(struct vm_area_struct *vma,
 static inline pte_t ptep_get_and_clear(struct mm_struct *mm,
 				       unsigned long address, pte_t *ptep)
 {
+#ifdef CONFIG_RKP
+	u64 ret = pte_val(*ptep);
+
+	if (rkp_is_pg_protected((u64)ptep)) {
+		uh_call(UH_APP_RKP, RKP_WRITE_PGT3, (u64)ptep, (u64)0, 0, 0);
+		return __pte(ret);
+	} else
+#endif
 	return __pte(xchg_relaxed(&pte_val(*ptep), 0));
 }
 

@@ -48,7 +48,9 @@
 #include <linux/nodemask.h>
 #include <linux/moduleparam.h>
 #include <linux/uaccess.h>
+#include <linux/debug-snapshot.h>
 #include <linux/nmi.h>
+#include <linux/sec_debug.h>
 
 #include "workqueue_internal.h"
 
@@ -912,6 +914,26 @@ struct task_struct *wq_worker_sleeping(struct task_struct *task)
 }
 
 /**
+ * wq_worker_last_func - retrieve worker's last work function
+ *
+ * Determine the last function a worker executed. This is called from
+ * the scheduler to get a worker's last known identity.
+ *
+ * CONTEXT:
+ * spin_lock_irq(rq->lock)
+ *
+ * Return:
+ * The last work function %current executed as a worker, NULL if it
+ * hasn't executed any work yet.
+ */
+work_func_t wq_worker_last_func(struct task_struct *task)
+{
+	struct worker *worker = kthread_data(task);
+
+	return worker->last_func;
+}
+
+/**
  * worker_set_flags - set worker flags and adjust nr_running accordingly
  * @worker: self
  * @flags: flags to set
@@ -1512,8 +1534,10 @@ static void __queue_delayed_work(int cpu, struct workqueue_struct *wq,
 	struct work_struct *work = &dwork->work;
 
 	WARN_ON_ONCE(!wq);
-	WARN_ON_ONCE(timer->function != delayed_work_timer_fn ||
-		     timer->data != (unsigned long)dwork);
+#ifndef CONFIG_CFI_CLANG
+	WARN_ON_ONCE(timer->function != delayed_work_timer_fn);
+#endif
+	WARN_ON_ONCE(timer->data != (unsigned long)dwork);
 	WARN_ON_ONCE(timer_pending(timer));
 	WARN_ON_ONCE(!list_empty(&work->entry));
 
@@ -1638,7 +1662,7 @@ static void worker_enter_idle(struct worker *worker)
 		mod_timer(&pool->idle_timer, jiffies + IDLE_WORKER_TIMEOUT);
 
 	/*
-	 * Sanity check nr_running.  Because wq_unbind_fn() releases
+	 * Sanity check nr_running.  Because unbind_workers() releases
 	 * pool->lock between setting %WORKER_UNBOUND and zapping
 	 * nr_running, the warning may trigger spuriously.  Check iff
 	 * unbind is not in progress.
@@ -2113,7 +2137,9 @@ __acquires(&pool->lock)
 	 */
 	lockdep_invariant_state(true);
 	trace_workqueue_execute_start(work);
+	dbg_snapshot_work(worker, worker->task, worker->current_func, DSS_FLAG_IN);
 	worker->current_func(work);
+	dbg_snapshot_work(worker, worker->task, worker->current_func, DSS_FLAG_OUT);
 	/*
 	 * While we must be careful to not use "work" after this, the trace
 	 * point will only record its address.
@@ -2146,6 +2172,9 @@ __acquires(&pool->lock)
 	/* clear cpu intensive status */
 	if (unlikely(cpu_intensive))
 		worker_clr_flags(worker, WORKER_CPU_INTENSIVE);
+
+	/* tag the worker for identification in schedule() */
+	worker->last_func = worker->current_func;
 
 	/* we're done with it, release */
 	hash_del(&worker->hentry);
@@ -2890,7 +2919,9 @@ bool flush_work(struct work_struct *work)
 	lock_map_release(&work->lockdep_map);
 
 	if (start_flush_work(work, &barr)) {
+		sec_debug_wtsk_set_data(DTYPE_WORK, work);
 		wait_for_completion(&barr.done);
+		sec_debug_wtsk_clear_data();
 		destroy_work_on_stack(&barr.work);
 		return true;
 	} else {
@@ -4579,9 +4610,8 @@ void show_workqueue_state(void)
  * cpu comes back online.
  */
 
-static void wq_unbind_fn(struct work_struct *work)
+static void unbind_workers(int cpu)
 {
-	int cpu = smp_processor_id();
 	struct worker_pool *pool;
 	struct worker *worker;
 
@@ -4778,12 +4808,13 @@ int workqueue_online_cpu(unsigned int cpu)
 
 int workqueue_offline_cpu(unsigned int cpu)
 {
-	struct work_struct unbind_work;
 	struct workqueue_struct *wq;
 
 	/* unbinding per-cpu workers should happen on the local CPU */
-	INIT_WORK_ONSTACK(&unbind_work, wq_unbind_fn);
-	queue_work_on(cpu, system_highpri_wq, &unbind_work);
+	if (WARN_ON(cpu != smp_processor_id()))
+		return -1;
+
+	unbind_workers(cpu);
 
 	/* update NUMA affinity of unbound workqueues */
 	mutex_lock(&wq_pool_mutex);
@@ -4791,9 +4822,6 @@ int workqueue_offline_cpu(unsigned int cpu)
 		wq_update_unbound_numa(wq, cpu, false);
 	mutex_unlock(&wq_pool_mutex);
 
-	/* wait for per-cpu unbinding to finish */
-	flush_work(&unbind_work);
-	destroy_work_on_stack(&unbind_work);
 	return 0;
 }
 
@@ -5501,8 +5529,12 @@ static void wq_watchdog_timer_fn(unsigned long data)
 
 	rcu_read_unlock();
 
-	if (lockup_detected)
+	if (lockup_detected) {
 		show_workqueue_state();
+#ifdef CONFIG_SEC_DEBUG_WORKQUEUE_LOCKUP_PANIC
+		BUG();
+#endif
+	}
 
 	wq_watchdog_reset_touched();
 	mod_timer(&wq_watchdog_timer, jiffies + thresh);

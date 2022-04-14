@@ -57,6 +57,12 @@ struct xattr;
 struct xfrm_sec_ctx;
 struct mm_struct;
 
+#ifdef CONFIG_KDP_CRED
+#include <linux/kdp.h>
+#else
+#define security_integrity_current()  0
+#endif
+
 /* If capable should audit the security request */
 #define SECURITY_CAP_NOAUDIT 0
 #define SECURITY_CAP_AUDIT 1
@@ -1730,6 +1736,54 @@ static inline void securityfs_remove(struct dentry *dentry)
 
 #endif
 
+#ifdef CONFIG_BPF_SYSCALL
+union bpf_attr;
+struct bpf_map;
+struct bpf_prog;
+struct bpf_prog_aux;
+#ifdef CONFIG_SECURITY
+extern int security_bpf(int cmd, union bpf_attr *attr, unsigned int size);
+extern int security_bpf_map(struct bpf_map *map, fmode_t fmode);
+extern int security_bpf_prog(struct bpf_prog *prog);
+extern int security_bpf_map_alloc(struct bpf_map *map);
+extern void security_bpf_map_free(struct bpf_map *map);
+extern int security_bpf_prog_alloc(struct bpf_prog_aux *aux);
+extern void security_bpf_prog_free(struct bpf_prog_aux *aux);
+#else
+static inline int security_bpf(int cmd, union bpf_attr *attr,
+					     unsigned int size)
+{
+	return 0;
+}
+
+static inline int security_bpf_map(struct bpf_map *map, fmode_t fmode)
+{
+	return 0;
+}
+
+static inline int security_bpf_prog(struct bpf_prog *prog)
+{
+	return 0;
+}
+
+static inline int security_bpf_map_alloc(struct bpf_map *map)
+{
+	return 0;
+}
+
+static inline void security_bpf_map_free(struct bpf_map *map)
+{ }
+
+static inline int security_bpf_prog_alloc(struct bpf_prog_aux *aux)
+{
+	return 0;
+}
+
+static inline void security_bpf_prog_free(struct bpf_prog_aux *aux)
+{ }
+#endif /* CONFIG_SECURITY */
+#endif /* CONFIG_BPF_SYSCALL */
+
 #ifdef CONFIG_SECURITY
 
 static inline char *alloc_secdata(void)
@@ -1753,5 +1807,42 @@ static inline void free_secdata(void *secdata)
 { }
 #endif /* CONFIG_SECURITY */
 
-#endif /* ! __LINUX_SECURITY_H */
+#ifdef CONFIG_PERF_EVENTS
+struct perf_event_attr;
+struct perf_event;
 
+#ifdef CONFIG_SECURITY
+extern int security_perf_event_open(struct perf_event_attr *attr, int type);
+extern int security_perf_event_alloc(struct perf_event *event);
+extern void security_perf_event_free(struct perf_event *event);
+extern int security_perf_event_read(struct perf_event *event);
+extern int security_perf_event_write(struct perf_event *event);
+#else
+static inline int security_perf_event_open(struct perf_event_attr *attr,
+					   int type)
+{
+	return 0;
+}
+
+static inline int security_perf_event_alloc(struct perf_event *event)
+{
+	return 0;
+}
+
+static inline void security_perf_event_free(struct perf_event *event)
+{
+}
+
+static inline int security_perf_event_read(struct perf_event *event)
+{
+	return 0;
+}
+
+static inline int security_perf_event_write(struct perf_event *event)
+{
+	return 0;
+}
+#endif /* CONFIG_SECURITY */
+#endif /* CONFIG_PERF_EVENTS */
+
+#endif /* ! __LINUX_SECURITY_H */

@@ -34,6 +34,7 @@
 #include <linux/mmu_context.h>
 #include <linux/poll.h>
 #include <linux/eventfd.h>
+#include <linux/delay.h>
 
 #include "u_fs.h"
 #include "u_f.h"
@@ -615,7 +616,11 @@ static int ffs_ep0_release(struct inode *inode, struct file *file)
 {
 	struct ffs_data *ffs = file->private_data;
 
+#ifdef VERBOSE_DEBUG
 	ENTER();
+#else
+	pr_info("%s\n", __func__);
+#endif
 
 	ffs_data_closed(ffs);
 
@@ -963,13 +968,12 @@ static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 
 	spin_lock_irq(&epfile->ffs->eps_lock);
 
-	if (epfile->ep != ep) {
+	if ((epfile->ep != ep) || !(ep->ep && ep->req)) {
 		/* In the meantime, endpoint got disabled or changed. */
 		ret = -ESHUTDOWN;
 	} else if (halt) {
-		ret = usb_ep_set_halt(ep->ep);
-		if (!ret)
-			ret = -EBADMSG;
+		usb_ep_set_halt(ep->ep);
+		ret = -EBADMSG;
 	} else if (unlikely(data_len == -EINVAL)) {
 		/*
 		 * Sanity Check: even though data_len can't be used
@@ -1008,16 +1012,25 @@ static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 			 * status. usb_ep_dequeue API should guarantee no race
 			 * condition with req->complete callback.
 			 */
-			usb_ep_dequeue(ep->ep, req);
-			wait_for_completion(&done);
-			interrupted = ep->status < 0;
+			if (epfile->ep == ep) {
+				usb_ep_dequeue(ep->ep, req);
+				interrupted = ep->status < 0;
+			} else
+				interrupted = 1;
 		}
 
-		if (interrupted)
+		if (interrupted || (epfile->ep != ep))
 			ret = -EINTR;
-		else if (io_data->read && ep->status > 0)
+		else if (io_data->read && ep->status > 0) {
+			if (ep->status > 0xFFFFFF) {
+				pr_info("%s abnormal size=%d\n",
+						__func__, (int)ep->status);
+				ret = -ENOMEM;
+				goto error_mutex;
+			}
 			ret = __ffs_epfile_read_data(epfile, data, ep->status,
 						     &io_data->data);
+		}
 		else
 			ret = ep->status;
 		goto error_mutex;
@@ -1037,7 +1050,6 @@ static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 
 		ret = usb_ep_queue(ep->ep, req, GFP_ATOMIC);
 		if (unlikely(ret)) {
-			io_data->req = NULL;
 			usb_ep_free_request(ep->ep, req);
 			goto error_lock;
 		}
@@ -1079,19 +1091,18 @@ static int ffs_aio_cancel(struct kiocb *kiocb)
 {
 	struct ffs_io_data *io_data = kiocb->private;
 	struct ffs_epfile *epfile = kiocb->ki_filp->private_data;
-	unsigned long flags;
 	int value;
 
 	ENTER();
 
-	spin_lock_irqsave(&epfile->ffs->eps_lock, flags);
+	spin_lock_irq(&epfile->ffs->eps_lock);
 
 	if (likely(io_data && io_data->ep && io_data->req))
 		value = usb_ep_dequeue(io_data->ep, io_data->req);
 	else
 		value = -EINVAL;
 
-	spin_unlock_irqrestore(&epfile->ffs->eps_lock, flags);
+	spin_unlock_irq(&epfile->ffs->eps_lock);
 
 	return value;
 }
@@ -1104,12 +1115,11 @@ static ssize_t ffs_epfile_write_iter(struct kiocb *kiocb, struct iov_iter *from)
 	ENTER();
 
 	if (!is_sync_kiocb(kiocb)) {
-		p = kzalloc(sizeof(io_data), GFP_KERNEL);
+		p = kmalloc(sizeof(io_data), GFP_KERNEL);
 		if (unlikely(!p))
 			return -ENOMEM;
 		p->aio = true;
 	} else {
-		memset(p, 0, sizeof(*p));
 		p->aio = false;
 	}
 
@@ -1141,12 +1151,11 @@ static ssize_t ffs_epfile_read_iter(struct kiocb *kiocb, struct iov_iter *to)
 	ENTER();
 
 	if (!is_sync_kiocb(kiocb)) {
-		p = kzalloc(sizeof(io_data), GFP_KERNEL);
+		p = kmalloc(sizeof(io_data), GFP_KERNEL);
 		if (unlikely(!p))
 			return -ENOMEM;
 		p->aio = true;
 	} else {
-		memset(p, 0, sizeof(*p));
 		p->aio = false;
 	}
 
@@ -2921,6 +2930,7 @@ static inline struct f_fs_opts *ffs_do_functionfs_bind(struct usb_function *f,
 	struct f_fs_opts *ffs_opts =
 		container_of(f->fi, struct f_fs_opts, func_inst);
 	int ret;
+	int retries = 100;
 
 	ENTER();
 
@@ -2931,12 +2941,21 @@ static inline struct f_fs_opts *ffs_do_functionfs_bind(struct usb_function *f,
 	 *
 	 * Configfs-enabled gadgets however do need ffs_dev_lock.
 	 */
-	if (!ffs_opts->no_configfs)
-		ffs_dev_lock();
-	ret = ffs_opts->dev->desc_ready ? 0 : -ENODEV;
-	func->ffs = ffs_opts->dev->ffs_data;
-	if (!ffs_opts->no_configfs)
-		ffs_dev_unlock();
+	do {
+		if (!ffs_opts->no_configfs)
+			ffs_dev_lock();
+		ret = ffs_opts->dev->desc_ready ? 0 : -ENODEV;
+		func->ffs = ffs_opts->dev->ffs_data;
+		if (!ffs_opts->no_configfs)
+			ffs_dev_unlock();
+		if (ret)
+			msleep(20);
+		else
+			break;
+	} while (--retries);
+
+	pr_info("ffs_do_functionfs_bind %d %d\n", ret, retries);
+
 	if (ret)
 		return ERR_PTR(ret);
 
@@ -3490,7 +3509,7 @@ static struct usb_function *ffs_alloc(struct usb_function_instance *fi)
 	if (unlikely(!func))
 		return ERR_PTR(-ENOMEM);
 
-	func->function.name    = "Function FS Gadget";
+	func->function.name    = "adb";
 
 	func->function.bind    = ffs_func_bind;
 	func->function.unbind  = ffs_func_unbind;
