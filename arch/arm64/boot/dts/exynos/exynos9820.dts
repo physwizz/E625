@@ -10055,7 +10055,7 @@
 		tmu_name = "BIG";
 		id = <0x0>;
 		sensors = <0x7c0>;
-		sensing_mode = "balance";
+		sensing_mode = "max";
 		hotplug_enable = <0x1>;
 		hotplug_in_threshold = <0x5b>;
 		hotplug_out_threshold = <0x60>;
@@ -10127,7 +10127,7 @@
 		tmu_name = "G3D";
 		id = <0x3>;
 		sensors = <0x21e>;
-		sensing_mode = "balance";
+		sensing_mode = "max";
 		#thermal-sensor-cells = <0x0>;
 		samsung,tmu_gain = <0x0>;
 		samsung,tmu_reference_voltage = <0x0>;
@@ -10178,7 +10178,7 @@
 			polling-delay = <0x3e8>;
 			thermal-sensors = <0x10d>;
 			governor = "power_allocator";
-			sustainable-power = <0x0>;
+			sustainable-power = <0x1>;
 			k_po = <0x0>;
 			k_pu = <0x0>;
 			k_i = <0x0>;
@@ -10198,7 +10198,7 @@
 				};
 
 				big-switch-on {
-					temperature = <0xd6d8>;
+					temperature = <0xc350>;
 					hysteresis = <0x7d0>;
 					type = "active";
 					linux,phandle = <0x2cf>;
@@ -10206,7 +10206,7 @@
 				};
 
 				big-control-temp {
-					temperature = <0x14438>;
+					temperature = <0xfde8>;
 					hysteresis = <0x1388>;
 					type = "passive";
 					linux,phandle = <0x10e>;
@@ -10214,7 +10214,7 @@
 				};
 
 				big-alert0 {
-					temperature = <0x17318>;
+					temperature = <0x11940>;
 					hysteresis = <0x1388>;
 					type = "active";
 					linux,phandle = <0x2d0>;
@@ -10222,7 +10222,7 @@
 				};
 
 				big-alert1 {
-					temperature = <0x186a0>;
+					temperature = <0x14050>;
 					hysteresis = <0x1388>;
 					type = "active";
 					linux,phandle = <0x2d1>;
@@ -10230,7 +10230,7 @@
 				};
 
 				big-alert2 {
-					temperature = <0x19a28>;
+					temperature = <0x16760>;
 					hysteresis = <0x1388>;
 					type = "active";
 					linux,phandle = <0x2d2>;
@@ -10238,7 +10238,7 @@
 				};
 
 				big-alert3 {
-					temperature = <0x1adb0>;
+					temperature = <0x17ae8>;
 					hysteresis = <0x1388>;
 					type = "active";
 					linux,phandle = <0x2d3>;
@@ -10289,7 +10289,7 @@
 				};
 
 				mid-switch-on {
-					temperature = <0xd6d8>;
+					temperature = <0xcf08>;
 					hysteresis = <0x7d0>;
 					type = "active";
 					linux,phandle = <0x2d7>;
@@ -10305,7 +10305,7 @@
 				};
 
 				mid-alert0 {
-					temperature = <0x17318>;
+					temperature = <0x14c08>;
 					hysteresis = <0x1388>;
 					type = "active";
 					linux,phandle = <0x2d8>;
@@ -10313,7 +10313,7 @@
 				};
 
 				mid-alert1 {
-					temperature = <0x186a0>;
+					temperature = <0x15f90>;
 					hysteresis = <0x1388>;
 					type = "active";
 					linux,phandle = <0x2d9>;
@@ -10321,7 +10321,7 @@
 				};
 
 				mid-alert2 {
-					temperature = <0x19a28>;
+					temperature = <0x17318>;
 					hysteresis = <0x1388>;
 					type = "active";
 					linux,phandle = <0x2da>;
@@ -10329,7 +10329,7 @@
 				};
 
 				mid-alert3 {
-					temperature = <0x1adb0>;
+					temperature = <0x186a0>;
 					hysteresis = <0x1388>;
 					type = "active";
 					linux,phandle = <0x2db>;
